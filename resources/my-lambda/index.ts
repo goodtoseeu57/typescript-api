@@ -6,10 +6,11 @@ interface Note {
     type: string;
 }
 
+export const throwErrorIfNull = <T>(result: T | null) => { if (result === null) throw new Error(); else return result }
+
 const dynamoDb = new AWS.DynamoDB({ apiVersion: "2012-08-10" });
 
-export const handler: APIGatewayProxyHandler = async (event) => {
-
+export const handler: APIGatewayProxyHandler = async (event, context) => {
     const note: Note = {
         content: 'hey',
         type: 'note'
@@ -22,6 +23,6 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         },
     };
 
-    const res = await dynamoDb.putItem(params).promise();
+    const res = await dynamoDb.putItem(params).promise().then(throwErrorIfNull)
     return { statusCode: 200, body: JSON.stringify({ message: 'Note added successfully', noteContent: note.content }) };
 };
