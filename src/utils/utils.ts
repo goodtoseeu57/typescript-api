@@ -1,0 +1,1 @@
+export const throwErrorIfNull = <T>(result: T | null) => { if (result === null) throw new Error(); else return result }
