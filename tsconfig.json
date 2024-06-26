@@ -2,10 +2,7 @@
   "compilerOptions": {
     "target": "ES2020",
     "module": "commonjs",
-    "lib": [
-      "es2020",
-      "dom"
-    ],
+    "lib": ["es2020", "dom"],
     "declaration": true,
     "strict": true,
     "noImplicitAny": true,
@@ -22,16 +19,8 @@
     "strictPropertyInitialization": false,
     "outDir": "./",
     "rootDir": "./",
-    "typeRoots": [
-      "./node_modules/@types"
-    ]
+    "typeRoots": ["./node_modules/@types"]
   },
-  "include": [
-    "lib/**/*.ts",
-    "resources/my-lambda/**/*.ts"
-  ],
-  "exclude": [
-    "node_modules",
-    "cdk.out"
-  ]
+  "include": ["lib/**/*.ts"],
+  "exclude": ["node_modules", "cdk.out"]
 }
