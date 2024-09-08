@@ -21,6 +21,6 @@
     "rootDir": "./",
     "typeRoots": ["./node_modules/@types"]
   },
-  "include": ["lib/**/*.ts"],
+  "include": ["./**/*.ts"],
   "exclude": ["node_modules", "cdk.out"]
 }
