@@ -87,11 +87,18 @@ export class ApiConstruct extends Construct {
   }
 
   setUpLex() {
-    const botRuntimeRole = new iam.Role(this, "BotRuntimeRole", {
+    const lexBotRole = new iam.Role(this, "LexBotRole", {
       assumedBy: new iam.ServicePrincipal("lexv2.amazonaws.com"),
-      managedPolicies: [
-        iam.ManagedPolicy.fromAwsManagedPolicyName("AmazonLexFullAccess"),
-      ],
+      inlinePolicies: {
+        ["LexRuntimeRolePolicy"]: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              resources: ["*"],
+              actions: ["polly:SynthesizeSpeech", "comprehend:DetectSentiment"],
+            }),
+          ],
+        }),
+      },
     });
 
     const lexLambda = new NodejsFunction(this, "lex", {
@@ -100,14 +107,27 @@ export class ApiConstruct extends Construct {
       handler: "lex.handler",
     });
 
-    // Grant Lex permissions to invoke the Lambda function
-    lexLambda.grantInvoke(botRuntimeRole);
-
     const myBot = new lex.CfnBot(this, "MyBot", {
-      roleArn: botRuntimeRole.roleArn,
+      roleArn: lexBotRole.roleArn,
       name: "MyBotWithCDK",
       dataPrivacy: { ChildDirected: false },
       idleSessionTtlInSeconds: 300,
+      testBotAliasSettings: {
+        botAliasLocaleSettings: [
+          {
+            localeId: "en_GB",
+            botAliasLocaleSetting: {
+              enabled: true,
+              codeHookSpecification: {
+                lambdaCodeHook: {
+                  codeHookInterfaceVersion: "1.0",
+                  lambdaArn: lexLambda.functionArn,
+                },
+              },
+            },
+          },
+        ],
+      },
       botLocales: [
         {
           localeId: "en_GB",
@@ -124,6 +144,7 @@ export class ApiConstruct extends Construct {
               fulfillmentCodeHook: {
                 enabled: true,
               },
+              dialogCodeHook: { enabled: true },
             },
             {
               name: "FallbackIntent",
@@ -134,7 +155,29 @@ export class ApiConstruct extends Construct {
       ],
     });
 
-    // Bot Version: A snapshot of the bot
+    lexLambda.addPermission("Lex Invocation", {
+      principal: new iam.ServicePrincipal("lexv2.amazonaws.com"),
+      sourceArn: `arn:aws:lex:${Stack.of(this).region}:${
+        Stack.of(this).account
+      }:bot-alias/${myBot.attrId}/*`,
+    });
+
+    new cdk.CfnOutput(this, "reminderBotLambdaLink", {
+      value: `https://${
+        Stack.of(this).region
+      }.console.aws.amazon.com/lambda/home?region=${
+        Stack.of(this).region
+      }#/functions/${lexLambda.functionName}`,
+    });
+
+    new cdk.CfnOutput(this, "reminderBotLink", {
+      value: `https://${
+        Stack.of(this).region
+      }.console.aws.amazon.com/lexv2/home?region=${
+        Stack.of(this).region
+      }#/bot/${myBot.attrId}`,
+    });
+
     const botVersion = new lex.CfnBotVersion(this, "BookTripBotVersion", {
       botId: myBot.ref,
       botVersionLocaleSpecification: [
