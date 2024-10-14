@@ -1,24 +1,20 @@
 import { APIGatewayProxyHandler } from "aws-lambda";
-import { dynamoDb } from "../../db/dynamodb"
+import { dynamoDb } from "../../db/dynamodb";
 import { throwErrorIfNull } from "../../../utils/utils";
-import { v4 as uuidv4 } from 'uuid';
+import { v4 as uuidv4 } from "uuid";
+import { LexRuntimeV2 } from "@aws-sdk/client-lex-runtime-v2";
 
-interface Note {
-    content: string;
-    type: string;
-}
+const lexruntime = new LexRuntimeV2();
 
 export const handler: APIGatewayProxyHandler = async (event, context) => {
+  console.log("Received event: ", event);
+  await lexruntime.recognizeText({
+    botId: undefined,
+    botAliasId: undefined,
+    localeId: undefined,
+    sessionId: undefined,
+    text: undefined,
+  });
 
-    const note: Note = JSON.parse(event.body || '{}');
-    const params = {
-        TableName: "Notes",
-        Item: {
-            id: { S: uuidv4() },
-            CUSTOMER_NAME: { S: note.content },
-        },
-    };
-
-    const res = await dynamoDb.putItem(params).promise().then(throwErrorIfNull)
-    return { statusCode: 200, body: JSON.stringify({ message: 'Note added successfully', noteContent: note.content }) };
+  return { statusCode: 200, body: JSON.stringify({ message: "Hello Auth" }) };
 };

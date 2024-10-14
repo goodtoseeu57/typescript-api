@@ -6,18 +6,14 @@ import {
   EndpointType,
   SecurityPolicy,
   AwsIntegration,
+  RequestAuthorizer,
+  TokenAuthorizer,
 } from "aws-cdk-lib/aws-apigateway";
 import * as cdk from "aws-cdk-lib";
-import {
-  Certificate,
-  CertificateValidation,
-} from "aws-cdk-lib/aws-certificatemanager";
-import { Key } from "aws-cdk-lib/aws-kms";
+
 import { Runtime, Code } from "aws-cdk-lib/aws-lambda";
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
-import { ARecord, HostedZone, RecordTarget } from "aws-cdk-lib/aws-route53";
-import { ApiGatewayDomain } from "aws-cdk-lib/aws-route53-targets";
-import { Queue } from "aws-cdk-lib/aws-sqs";
+
 import { Construct } from "constructs";
 import { join } from "path";
 import * as iam from "aws-cdk-lib/aws-iam";
@@ -43,6 +39,17 @@ const lambdaConfigs: LambdaConfig[] = [
       "index.ts"
     ),
   },
+  {
+    functionName: "helloWorld",
+    handler: "helloWorld.handler",
+    resourcePath: "hello",
+    httpMethod: "GET",
+    codePath: join(
+      __dirname,
+      "./../src/resources/my-lambdas/hello-world",
+      "index.ts"
+    ),
+  },
 ];
 
 export class ApiConstruct extends Construct {
@@ -50,40 +57,66 @@ export class ApiConstruct extends Construct {
     super(scope, id);
   }
   public createRestApi() {
+    const authorizerLambdaRole = this.createLambdaRole("AuthorizerLambdaRole");
+
+    const authorizerFn = new NodejsFunction(this, "AuthorizerFunction", {
+      runtime: Runtime.NODEJS_20_X,
+      role: authorizerLambdaRole,
+      functionName: "AuthorizerFunction",
+      handler: "index.handler",
+      environment: {
+        COGNITO_USER_POOL_ID: "*",
+        COGNITO_CLIENT_ID: "*",
+      },
+      entry: join(
+        __dirname,
+        "./../src/resources/my-lambdas/authorizer",
+        "index.ts"
+      ),
+    });
+
+    const authorizer = new TokenAuthorizer(this, "Authorizer", {
+      handler: authorizerFn,
+    });
+
     const api = new RestApi(this, "my-api", {
       restApiName: "my-api",
       description: "This is my api",
+      defaultMethodOptions: {
+        authorizer,
+      },
     });
+
+    const basicLambdaRole = this.createLambdaRole("BasicLambdaRole");
 
     lambdaConfigs.forEach((config) => {
-      const lambda = this.createLambdaFunction(config);
+      const lambda = this.createLambdaFunction(config, basicLambdaRole);
       const integration = new LambdaIntegration(lambda);
-      // const lexIntegration = new AwsIntegration({
-      //   service: 'lex',
-      //   action: 'RecognizeText',
-      //   options: {
-      //     credentialsRole: apiGatewayLexRole,
-      //     requestTemplates: {
-      //       'application/json': JSON.stringify({
-      //         botAliasId: botAlias.ref,
-      //         botId: lexBot.ref,
-      //         localeId: 'en_GB',
-      //         sessionId: "$context.requestId",
-      //         text: "$input.json('$.inputText')"
-      //       })
-      //     },
-      //     integrationResponses: [{
-      //       statusCode: '200',
-      //     }],
-      //   },
-      // });
+
       api.root
         .addResource(config.resourcePath)
-        .addMethod(config.httpMethod, integration);
+        .addMethod(config.httpMethod, integration, { authorizer });
     });
 
-    this.setUpLex();
+    // Set up Lex bot integration
+    const { botAlias, botId } = this.setUpLex();
+    console.log(botAlias, botId);
+
     return api;
+  }
+
+  public createLambdaRole(name: string) {
+    const lambdaRole = new iam.Role(this, name, {
+      assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
+    });
+
+    lambdaRole.addManagedPolicy(
+      iam.ManagedPolicy.fromAwsManagedPolicyName(
+        "service-role/AWSLambdaBasicExecutionRole"
+      )
+    );
+
+    return lambdaRole;
   }
 
   setUpLex() {
@@ -218,11 +251,68 @@ export class ApiConstruct extends Construct {
       value: botAlias.attrBotAliasId,
       description: "Lex Bot Alias ID",
     });
+
+    return { botAlias, botId: myBot.ref };
   }
 
-  private createLambdaFunction(config: LambdaConfig): NodejsFunction {
+  // createLexIntegration(
+  //   botAlias: lex.CfnBotAlias,
+  //   botId: string
+  // ): AwsIntegration {
+  //   const apiGatewayLexRole = new iam.Role(this, "ApiGatewayLexRole", {
+  //     assumedBy: new iam.ServicePrincipal("apigateway.amazonaws.com"),
+  //     inlinePolicies: {
+  //       ["LexIntegrationPolicy"]: new iam.PolicyDocument({
+  //         statements: [
+  //           new iam.PolicyStatement({
+  //             actions: ["lex:RecognizeText"],
+  //             resources: [
+  //               `arn:aws:lex:${Stack.of(this).region}:${
+  //                 Stack.of(this).account
+  //               }:bot-alias/${botId}/${botAlias.attrBotAliasId}`,
+  //             ],
+  //           }),
+  //         ],
+  //       }),
+  //     },
+  //   });
+
+  //   return new AwsIntegration({
+  //     service: "lex",
+  //     action: "RecognizeText",
+  //     options: {
+  //       credentialsRole: apiGatewayLexRole,
+  //       integrationResponses: [
+  //         {
+  //           statusCode: "200",
+  //           responseTemplates: {
+  //             "application/json": `{
+  //               "message": $input.path('$.messages[0].content')
+  //             }`,
+  //           },
+  //         },
+  //       ],
+  //       requestTemplates: {
+  //         "application/json": `{
+  //           "botAliasId": "${botAlias.ref}",
+  //           "botId": "${botId}",
+  //           "localeId": "en_GB",
+  //           "sessionId": "$context.requestId",
+  //           "text": "$input.body"
+  //         }`,
+  //       },
+  //     },
+  //   });
+  // }
+
+  private createLambdaFunction(
+    config: LambdaConfig,
+    role: iam.IRole
+  ): NodejsFunction {
     return new NodejsFunction(this, config.functionName, {
       runtime: Runtime.NODEJS_20_X,
+      role: role,
+
       entry: config.codePath,
       handler: config.handler,
     });

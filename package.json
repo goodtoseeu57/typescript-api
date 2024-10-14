@@ -8,6 +8,8 @@
     "build": "tsc",
     "watch": "tsc -w",
     "test": "jest",
+    "test-cover": "jest --coverage",
+    "test-collect": "jest --collect-coverage",
     "cdk": "cdk"
   },
   "devDependencies": {
@@ -24,8 +26,10 @@
   "dependencies": {
     "@aws-cdk/aws-apigateway": "^1.204.0",
     "@aws-cdk/aws-dynamodb": "^1.204.0",
+    "@aws-sdk/client-lex-runtime-v2": "^3.662.0",
     "@types/uuid": "^9.0.8",
     "aws-cdk-lib": "2.129.0",
+    "aws-jwt-verify": "^4.0.0",
     "aws-sdk": "^2.1573.0",
     "constructs": "^10.0.0",
     "source-map-support": "^0.5.21",
