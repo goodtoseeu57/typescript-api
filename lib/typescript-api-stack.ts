@@ -5,7 +5,7 @@ export class TypescriptApiStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, {
       ...props,
-      stackName: "TypescriptApiStack12",
+      stackName: "TypescriptApiStack-lex",
       env: {
         account: process.env.CDK_DEFAULT_ACCOUNT,
         region: process.env.CDK_DEFAULT_REGION,

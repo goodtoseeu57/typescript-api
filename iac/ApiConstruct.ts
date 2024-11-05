@@ -2,11 +2,6 @@ import { Stack } from "aws-cdk-lib";
 import {
   RestApi,
   LambdaIntegration,
-  DomainName,
-  EndpointType,
-  SecurityPolicy,
-  AwsIntegration,
-  RequestAuthorizer,
   TokenAuthorizer,
 } from "aws-cdk-lib/aws-apigateway";
 import * as cdk from "aws-cdk-lib";
@@ -18,6 +13,7 @@ import { Construct } from "constructs";
 import { join } from "path";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lex from "aws-cdk-lib/aws-lex";
+import { GetSessionCommand } from "@aws-sdk/client-lex-runtime-v2";
 
 interface LambdaConfig {
   functionName: string;
@@ -29,8 +25,8 @@ interface LambdaConfig {
 
 const lambdaConfigs: LambdaConfig[] = [
   {
-    functionName: "CreateNote",
-    handler: "createNote.handler",
+    functionName: "NewCreateNote",
+    handler: "index.handler",
     resourcePath: "create-note",
     httpMethod: "POST",
     codePath: join(
@@ -58,15 +54,17 @@ export class ApiConstruct extends Construct {
   }
   public createRestApi() {
     const authorizerLambdaRole = this.createLambdaRole("AuthorizerLambdaRole");
+    const { botAlias, botId } = setUpLex(this);
 
     const authorizerFn = new NodejsFunction(this, "AuthorizerFunction", {
       runtime: Runtime.NODEJS_20_X,
       role: authorizerLambdaRole,
       functionName: "AuthorizerFunction",
+      timeout: cdk.Duration.seconds(30),
       handler: "index.handler",
       environment: {
-        COGNITO_USER_POOL_ID: "*",
-        COGNITO_CLIENT_ID: "*",
+        COGNITO_USER_POOL_ID: process.env.COGNITO_USER_POOL_ID!,
+        COGNITO_CLIENT_ID: process.env.COGNITO_CLIENT_ID!,
       },
       entry: join(
         __dirname,
@@ -88,19 +86,17 @@ export class ApiConstruct extends Construct {
     });
 
     const basicLambdaRole = this.createLambdaRole("BasicLambdaRole");
-
     lambdaConfigs.forEach((config) => {
-      const lambda = this.createLambdaFunction(config, basicLambdaRole);
+      const lambda = this.createLambdaFunction(config, basicLambdaRole, {
+        botAlias,
+        botId,
+      });
       const integration = new LambdaIntegration(lambda);
 
       api.root
         .addResource(config.resourcePath)
         .addMethod(config.httpMethod, integration, { authorizer });
     });
-
-    // Set up Lex bot integration
-    const { botAlias, botId } = this.setUpLex();
-    console.log(botAlias, botId);
 
     return api;
   }
@@ -116,10 +112,14 @@ export class ApiConstruct extends Construct {
       )
     );
 
+    lambdaRole.addManagedPolicy(
+      iam.ManagedPolicy.fromAwsManagedPolicyName("AmazonLexRunBotsOnly")
+    );
+
     return lambdaRole;
   }
 
-  setUpLex() {
+  setUpLexWithLambda() {
     const lexBotRole = new iam.Role(this, "LexBotRole", {
       assumedBy: new iam.ServicePrincipal("lexv2.amazonaws.com"),
       inlinePolicies: {
@@ -143,6 +143,7 @@ export class ApiConstruct extends Construct {
     const myBot = new lex.CfnBot(this, "MyBot", {
       roleArn: lexBotRole.roleArn,
       name: "MyBotWithCDK",
+      autoBuildBotLocales: true,
       dataPrivacy: { ChildDirected: false },
       idleSessionTtlInSeconds: 300,
       testBotAliasSettings: {
@@ -222,7 +223,7 @@ export class ApiConstruct extends Construct {
     });
 
     // Bot Alias: A pointer to a specific bot version
-    const botAlias = new lex.CfnBotAlias(this, "BookTripBotAlias", {
+    const botAlias = new lex.CfnBotAlias(this, "BookTripBotAliasUS", {
       botId: myBot.ref,
       botAliasName: "BookTripVersion1Alias",
       botVersion: botVersion.attrBotVersion,
@@ -252,69 +253,264 @@ export class ApiConstruct extends Construct {
       description: "Lex Bot Alias ID",
     });
 
-    return { botAlias, botId: myBot.ref };
+    return { botAlias: botAlias.attrBotAliasId, botId: myBot.ref };
   }
-
-  // createLexIntegration(
-  //   botAlias: lex.CfnBotAlias,
-  //   botId: string
-  // ): AwsIntegration {
-  //   const apiGatewayLexRole = new iam.Role(this, "ApiGatewayLexRole", {
-  //     assumedBy: new iam.ServicePrincipal("apigateway.amazonaws.com"),
-  //     inlinePolicies: {
-  //       ["LexIntegrationPolicy"]: new iam.PolicyDocument({
-  //         statements: [
-  //           new iam.PolicyStatement({
-  //             actions: ["lex:RecognizeText"],
-  //             resources: [
-  //               `arn:aws:lex:${Stack.of(this).region}:${
-  //                 Stack.of(this).account
-  //               }:bot-alias/${botId}/${botAlias.attrBotAliasId}`,
-  //             ],
-  //           }),
-  //         ],
-  //       }),
-  //     },
-  //   });
-
-  //   return new AwsIntegration({
-  //     service: "lex",
-  //     action: "RecognizeText",
-  //     options: {
-  //       credentialsRole: apiGatewayLexRole,
-  //       integrationResponses: [
-  //         {
-  //           statusCode: "200",
-  //           responseTemplates: {
-  //             "application/json": `{
-  //               "message": $input.path('$.messages[0].content')
-  //             }`,
-  //           },
-  //         },
-  //       ],
-  //       requestTemplates: {
-  //         "application/json": `{
-  //           "botAliasId": "${botAlias.ref}",
-  //           "botId": "${botId}",
-  //           "localeId": "en_GB",
-  //           "sessionId": "$context.requestId",
-  //           "text": "$input.body"
-  //         }`,
-  //       },
-  //     },
-  //   });
-  // }
 
   private createLambdaFunction(
     config: LambdaConfig,
-    role: iam.IRole
+    role: iam.IRole,
+    envConfig: { botAlias: string; botId: string }
   ): NodejsFunction {
     return new NodejsFunction(this, config.functionName, {
       runtime: Runtime.NODEJS_20_X,
       role: role,
-
+      timeout: cdk.Duration.seconds(30),
+      environment: {
+        BOT_ALIAS: envConfig.botAlias,
+        BOT_ID: envConfig.botId,
+      },
       entry: config.codePath,
       handler: config.handler,
     });
   }
+}
+
+function setUpLex(scope: Construct) {
+  const botRuntimeRole = new iam.Role(scope, "BotRuntimeRole", {
+    assumedBy: new iam.ServicePrincipal("lexv2.amazonaws.com"),
+    managedPolicies: [
+      iam.ManagedPolicy.fromAwsManagedPolicyName("AmazonLexFullAccess"),
+    ],
+  });
+
+  // 2. Inline bot definition which depends on the IAM role
+  const bookTripTemplateBot = new lex.CfnBot(scope, "BookTripTemplateBot3", {
+    roleArn: botRuntimeRole.roleArn,
+    name: "BookTripWithCFN",
+    dataPrivacy: { ChildDirected: false },
+    idleSessionTtlInSeconds: 300,
+    description: "How to create a BookTrip bot with CDK",
+    autoBuildBotLocales: true,
+    botLocales: [
+      {
+        localeId: "en_GB",
+        description: "Book a trip bot Locale",
+        nluConfidenceThreshold: 0.7,
+        slotTypes: [
+          {
+            name: "CarTypeValues",
+            description: "Slot Type description",
+            slotTypeValues: [
+              { sampleValue: { value: "economy" } },
+              { sampleValue: { value: "standard" } },
+              { sampleValue: { value: "midsize" } },
+              { sampleValue: { value: "full size" } },
+              { sampleValue: { value: "luxury" } },
+              { sampleValue: { value: "minivan" } },
+            ],
+            valueSelectionSetting: { resolutionStrategy: "ORIGINAL_VALUE" },
+          },
+        ],
+        intents: [
+          {
+            name: "BookCar",
+            description: "Intent to book a car on StayBooker",
+            sampleUtterances: [
+              { utterance: "Book a car" },
+              { utterance: "Reserve a car" },
+              { utterance: "Make a car reservation" },
+            ],
+            slotPriorities: [
+              { priority: 4, slotName: "DriverAge" },
+              { priority: 1, slotName: "PickUpCity" },
+              { priority: 3, slotName: "ReturnDate" },
+              { priority: 5, slotName: "CarType" },
+              { priority: 2, slotName: "PickUpDate" },
+            ],
+            intentConfirmationSetting: {
+              promptSpecification: {
+                messageGroupsList: [
+                  {
+                    message: {
+                      plainTextMessage: {
+                        value:
+                          "Okay, I have you down for a {CarType} rental in {PickUpCity} from {PickUpDate} to {ReturnDate}.  Should I book the reservation?",
+                      },
+                    },
+                  },
+                ],
+                maxRetries: 3,
+                allowInterrupt: false,
+              },
+              declinationResponse: {
+                messageGroupsList: [
+                  {
+                    message: {
+                      plainTextMessage: {
+                        value:
+                          "Okay, I have cancelled your reservation in progress pal",
+                      },
+                    },
+                  },
+                ],
+                allowInterrupt: false,
+              },
+            },
+            slots: [
+              {
+                name: "PickUpCity",
+                description: "something",
+                slotTypeName: "AMAZON.City",
+                valueElicitationSetting: {
+                  slotConstraint: "Required",
+                  promptSpecification: {
+                    messageGroupsList: [
+                      {
+                        message: {
+                          plainTextMessage: {
+                            value:
+                              "In what city do you need to rent a car pal?",
+                          },
+                        },
+                      },
+                    ],
+                    maxRetries: 3,
+                    allowInterrupt: false,
+                  },
+                },
+              },
+              {
+                name: "PickUpDate",
+                description: "something",
+                slotTypeName: "AMAZON.Date",
+                valueElicitationSetting: {
+                  slotConstraint: "Required",
+                  promptSpecification: {
+                    messageGroupsList: [
+                      {
+                        message: {
+                          plainTextMessage: {
+                            value: "What day do you want to start your rental?",
+                          },
+                        },
+                      },
+                    ],
+                    maxRetries: 3,
+                    allowInterrupt: false,
+                  },
+                },
+              },
+              {
+                name: "ReturnDate",
+                description: "something",
+                slotTypeName: "AMAZON.Date",
+                valueElicitationSetting: {
+                  slotConstraint: "Required",
+                  promptSpecification: {
+                    messageGroupsList: [
+                      {
+                        message: {
+                          plainTextMessage: {
+                            value: "What day do you want to return the car?",
+                          },
+                        },
+                      },
+                    ],
+                    maxRetries: 3,
+                    allowInterrupt: false,
+                  },
+                },
+              },
+              {
+                name: "DriverAge",
+                description: "something",
+                slotTypeName: "AMAZON.Number",
+                valueElicitationSetting: {
+                  slotConstraint: "Required",
+                  promptSpecification: {
+                    messageGroupsList: [
+                      {
+                        message: {
+                          plainTextMessage: {
+                            value: "How old is the driver for this rental?",
+                          },
+                        },
+                      },
+                    ],
+                    maxRetries: 3,
+                    allowInterrupt: false,
+                  },
+                },
+              },
+              {
+                name: "CarType",
+                description: "something",
+                slotTypeName: "CarTypeValues",
+                valueElicitationSetting: {
+                  slotConstraint: "Required",
+                  promptSpecification: {
+                    messageGroupsList: [
+                      {
+                        message: {
+                          plainTextMessage: {
+                            value:
+                              "What type of car would you like to rent?  Our most popular options are economy, midsize, and luxury",
+                          },
+                        },
+                      },
+                    ],
+                    maxRetries: 3,
+                    allowInterrupt: false,
+                  },
+                },
+              },
+            ],
+          },
+
+          {
+            name: "FallbackIntent",
+            description: "Default intent when no other intent matches",
+            parentIntentSignature: "AMAZON.FallbackIntent",
+          },
+        ],
+      },
+    ],
+  });
+  const date = new Date();
+  // 3. Define a bot version which depends on the DRAFT version of the Lex Bot
+  const bookTripBotVersionWithCFN = new lex.CfnBotVersion(
+    scope,
+    `BookTripBotVersionWithCFN-${date.getTime()}`,
+    {
+      botId: bookTripTemplateBot.ref,
+      botVersionLocaleSpecification: [
+        {
+          localeId: "en_GB",
+          botVersionLocaleDetails: { sourceBotVersion: "DRAFT" },
+        },
+      ],
+      description: "BookTrip Version",
+    }
+  );
+
+  // 4. We define the alias by providing the bot version created by the AWS::Lex::BotVersion resource above
+  const botAlias = new lex.CfnBotAlias(scope, "FirstBotAliasWithCFN", {
+    botId: bookTripTemplateBot.ref,
+    botAliasName: "BookTripVersion1Alias",
+    botAliasLocaleSettings: [
+      {
+        localeId: "en_GB",
+        botAliasLocaleSetting: {
+          enabled: true,
+        },
+      },
+    ],
+    botVersion: bookTripBotVersionWithCFN.attrBotVersion,
+    sentimentAnalysisSettings: { DetectSentiment: false },
+  });
+
+  return {
+    botAlias: botAlias.attrBotAliasId,
+    botId: bookTripBotVersionWithCFN.botId,
+  };
 }

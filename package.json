@@ -15,6 +15,8 @@
   "devDependencies": {
     "@types/aws-lambda": "^8.10.136",
     "@types/jest": "^29.5.12",
+    "@types/jsonwebtoken": "^9.0.7",
+    "@types/jwk-to-pem": "^2.0.3",
     "@types/node": "20.11.17",
     "aws-cdk": "2.129.0",
     "esbuild": "^0.21.5",
@@ -24,15 +26,17 @@
     "typescript": "~5.3.3"
   },
   "dependencies": {
-    "@aws-cdk/aws-apigateway": "^1.204.0",
-    "@aws-cdk/aws-dynamodb": "^1.204.0",
     "@aws-sdk/client-lex-runtime-v2": "^3.662.0",
     "@types/uuid": "^9.0.8",
-    "aws-cdk-lib": "2.129.0",
+    "aws-cdk-lib": "^2.129.0",
     "aws-jwt-verify": "^4.0.0",
     "aws-sdk": "^2.1573.0",
+    "axios": "^1.7.7",
     "constructs": "^10.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "jwk-to-pem": "^2.0.6",
     "source-map-support": "^0.5.21",
-    "uuid": "^9.0.1"
+    "uuid": "^9.0.1",
+    "zod": "^3.23.8"
   }
 }
