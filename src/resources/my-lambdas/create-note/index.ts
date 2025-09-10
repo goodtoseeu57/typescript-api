@@ -6,8 +6,10 @@ import {
   APIGatewayProxyEvent,
   APIGatewayProxyHandler,
   Context,
+  APIGatewayProxyResult,
 } from "aws-lambda";
 import { LexV2ActiveContext } from "aws-lambda";
+import * as AWS from "aws-sdk";
 
 interface CustomBody {
   text: string;
@@ -18,7 +20,12 @@ interface CustomEvent extends Omit<APIGatewayProxyEvent, "body"> {
 }
 
 const lexRuntime = new LexRuntimeV2Client();
-export const handler = async (event: CustomEvent, context: Context) => {
+const sns = new AWS.SNS();
+
+export const handler = async (
+  event: CustomEvent,
+  context: Context
+): Promise<APIGatewayProxyResult> => {
   console.log(event.requestContext.authorizer);
 
   console.log(context);
@@ -48,9 +55,49 @@ export const handler = async (event: CustomEvent, context: Context) => {
   try {
     const response = await lexRuntime.send(command);
 
+    // Send notification after successful note creation
+    if (process.env.SNS_TOPIC_ARN) {
+      try {
+        const notificationMessage = {
+          default: `Note created successfully: ${event.body.text}`,
+          email: JSON.stringify({
+            subject: "New Note Created",
+            content: `A new note was created with text: ${event.body.text}`,
+            recipient: "user@example.com", // This would come from user context
+          }),
+        };
+
+        await sns
+          .publish({
+            TopicArn: process.env.SNS_TOPIC_ARN,
+            Message: JSON.stringify(notificationMessage),
+            MessageStructure: "json",
+            MessageAttributes: {
+              notificationType: {
+                DataType: "String",
+                StringValue: "all",
+              },
+              priority: {
+                DataType: "String",
+                StringValue: "normal",
+              },
+            },
+          })
+          .promise();
+
+        console.log("Notification sent successfully");
+      } catch (notificationError) {
+        console.error("Failed to send notification:", notificationError);
+        // Don't fail the main operation if notification fails
+      }
+    }
+
     return {
       statusCode: 200,
       body: JSON.stringify(response),
+      headers: {
+        "Content-Type": "application/json",
+      },
     };
   } catch (error) {
     console.error(error);
@@ -59,6 +106,9 @@ export const handler = async (event: CustomEvent, context: Context) => {
       body: JSON.stringify({
         error: "Error invoking Lex bot",
       }),
+      headers: {
+        "Content-Type": "application/json",
+      },
     };
   }
 };

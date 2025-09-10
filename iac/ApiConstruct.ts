@@ -14,6 +14,7 @@ import { join } from "path";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lex from "aws-cdk-lib/aws-lex";
 import { GetSessionCommand } from "@aws-sdk/client-lex-runtime-v2";
+import { NotificationServiceConstruct } from "./NotificationServiceConstruct";
 
 interface LambdaConfig {
   functionName: string;
@@ -49,12 +50,22 @@ const lambdaConfigs: LambdaConfig[] = [
 ];
 
 export class ApiConstruct extends Construct {
+  private notificationService: NotificationServiceConstruct;
+
   constructor(private readonly scope: Stack, id: string) {
     super(scope, id);
+
+    // Initialize notification service
+    this.notificationService = new NotificationServiceConstruct(
+      this,
+      "NotificationService"
+    );
   }
   public createRestApi() {
     const authorizerLambdaRole = this.createLambdaRole("AuthorizerLambdaRole");
     const { botAlias, botId } = setUpLex(this);
+
+    this.setUpLexWithLambda();
 
     const authorizerFn = new NodejsFunction(this, "AuthorizerFunction", {
       runtime: Runtime.NODEJS_20_X,
@@ -97,6 +108,14 @@ export class ApiConstruct extends Construct {
         .addResource(config.resourcePath)
         .addMethod(config.httpMethod, integration, { authorizer });
     });
+
+    // Add notification publisher endpoint
+    const publisherLambda = this.notificationService.createPublisherLambda();
+    const publisherIntegration = new LambdaIntegration(publisherLambda);
+    api.root
+      .addResource("notifications")
+      .addResource("publish")
+      .addMethod("POST", publisherIntegration, { authorizer });
 
     return api;
   }
@@ -175,10 +194,9 @@ export class ApiConstruct extends Construct {
                 { utterance: "I want to make a note" },
                 { utterance: "Add a note" },
               ],
-              fulfillmentCodeHook: {
-                enabled: true,
+              dialogCodeHook: {
+                enabled: true, // Trigger the Lambda during dialog (slot elicitation)
               },
-              dialogCodeHook: { enabled: true },
             },
             {
               name: "FallbackIntent",
@@ -261,17 +279,23 @@ export class ApiConstruct extends Construct {
     role: iam.IRole,
     envConfig: { botAlias: string; botId: string }
   ): NodejsFunction {
-    return new NodejsFunction(this, config.functionName, {
+    const lambda = new NodejsFunction(this, config.functionName, {
       runtime: Runtime.NODEJS_20_X,
       role: role,
       timeout: cdk.Duration.seconds(30),
       environment: {
         BOT_ALIAS: envConfig.botAlias,
         BOT_ID: envConfig.botId,
+        SNS_TOPIC_ARN: this.notificationService.topic.topicArn,
       },
       entry: config.codePath,
       handler: config.handler,
     });
+
+    // Grant permission to publish to SNS topic
+    this.notificationService.topic.grantPublish(lambda);
+
+    return lambda;
   }
 }
 
@@ -291,6 +315,7 @@ function setUpLex(scope: Construct) {
     idleSessionTtlInSeconds: 300,
     description: "How to create a BookTrip bot with CDK",
     autoBuildBotLocales: true,
+
     botLocales: [
       {
         localeId: "en_GB",
@@ -377,6 +402,12 @@ function setUpLex(scope: Construct) {
                     maxRetries: 3,
                     allowInterrupt: false,
                   },
+                  // slotCaptureSetting: {
+                  //   captureConditional: {
+                  //     isActive: true,
+
+                  //   }
+                  // }
                 },
               },
               {
