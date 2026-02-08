@@ -6,6 +6,8 @@ import * as snsSubscriptions from "aws-cdk-lib/aws-sns-subscriptions";
 import * as lambda from "aws-cdk-lib/aws-lambda-nodejs";
 import * as lambdaEventSources from "aws-cdk-lib/aws-lambda-event-sources";
 import { Runtime } from "aws-cdk-lib/aws-lambda";
+import * as events from "aws-cdk-lib/aws-events";
+import * as eventTargets from "aws-cdk-lib/aws-events-targets";
 import { join } from "path";
 
 export class NotificationServiceConstruct extends Construct {
@@ -92,6 +94,35 @@ export class NotificationServiceConstruct extends Construct {
       },
     });
 
+    // Additional queues per diagram (Checks and Summaries)
+    const checksDlq = new sqs.Queue(this, "ChecksDLQ", {
+      queueName: "checks-service-dlq",
+      retentionPeriod: Duration.days(14),
+      encryption: sqs.QueueEncryption.KMS_MANAGED,
+    });
+
+    const summariesDlq = new sqs.Queue(this, "SummariesDLQ", {
+      queueName: "summaries-service-dlq",
+      retentionPeriod: Duration.days(14),
+      encryption: sqs.QueueEncryption.KMS_MANAGED,
+    });
+
+    const checksQueue = new sqs.Queue(this, "ChecksQueue", {
+      queueName: "checks-service-queue",
+      visibilityTimeout: Duration.seconds(300),
+      retentionPeriod: Duration.days(4),
+      encryption: sqs.QueueEncryption.KMS_MANAGED,
+      deadLetterQueue: { queue: checksDlq, maxReceiveCount: 3 },
+    });
+
+    const summariesQueue = new sqs.Queue(this, "SummariesQueue", {
+      queueName: "summaries-service-queue",
+      visibilityTimeout: Duration.seconds(300),
+      retentionPeriod: Duration.days(4),
+      encryption: sqs.QueueEncryption.KMS_MANAGED,
+      deadLetterQueue: { queue: summariesDlq, maxReceiveCount: 3 },
+    });
+
     // 4. Create SNS subscriptions with message filtering
     this.topic.addSubscription(
       new snsSubscriptions.SqsSubscription(emailQueue, {
@@ -136,19 +167,39 @@ export class NotificationServiceConstruct extends Construct {
       })
     );
 
+    // Checks and Summaries subscriptions (no extra filtering)
+    this.topic.addSubscription(
+      new snsSubscriptions.SqsSubscription(checksQueue, {
+        rawMessageDelivery: false,
+      })
+    );
+
+    this.topic.addSubscription(
+      new snsSubscriptions.SqsSubscription(summariesQueue, {
+        rawMessageDelivery: false,
+      })
+    );
+
     // 5. Store queues for external access
     this.queues = {
       email: emailQueue,
       sms: smsQueue,
       push: pushQueue,
       audit: auditQueue,
+      checks: checksQueue,
+      summaries: summariesQueue,
       emailDlq: emailDlq,
       smsDlq: smsDlq,
       pushDlq: pushDlq,
       auditDlq: auditDlq,
+      checksDlq: checksDlq,
+      summariesDlq: summariesDlq,
     };
 
-    // 6. Create Lambda functions to process each queue
+    // 6. EventBridge integration: route conversation activity to SNS and schedule close
+    this.createEventBridgeFlows();
+
+    // 7. Create Lambda functions to process each queue
     this.createProcessorLambdas();
   }
 
@@ -235,6 +286,48 @@ export class NotificationServiceConstruct extends Construct {
         maxBatchingWindow: Duration.seconds(10),
       })
     );
+
+    // Checks processor (placeholder)
+    const checksProcessor = new lambda.NodejsFunction(this, "ChecksProcessor", {
+      entry: join(__dirname, "../src/processors/checks-processor.ts"),
+      handler: "handler",
+      runtime: Runtime.NODEJS_20_X,
+      timeout: Duration.minutes(5),
+      reservedConcurrentExecutions: 5,
+      environment: {
+        CHECKS_QUEUE_URL: this.queues.checks.queueUrl,
+      },
+    });
+    this.queues.checks.grantConsumeMessages(checksProcessor);
+    checksProcessor.addEventSource(
+      new lambdaEventSources.SqsEventSource(this.queues.checks, {
+        batchSize: 10,
+        maxBatchingWindow: Duration.seconds(5),
+      })
+    );
+
+    // Summaries processor (placeholder)
+    const summariesProcessor = new lambda.NodejsFunction(
+      this,
+      "SummariesProcessor",
+      {
+        entry: join(__dirname, "../src/processors/summaries-processor.ts"),
+        handler: "handler",
+        runtime: Runtime.NODEJS_20_X,
+        timeout: Duration.minutes(5),
+        reservedConcurrentExecutions: 5,
+        environment: {
+          SUMMARIES_QUEUE_URL: this.queues.summaries.queueUrl,
+        },
+      }
+    );
+    this.queues.summaries.grantConsumeMessages(summariesProcessor);
+    summariesProcessor.addEventSource(
+      new lambdaEventSources.SqsEventSource(this.queues.summaries, {
+        batchSize: 10,
+        maxBatchingWindow: Duration.seconds(5),
+      })
+    );
   }
 
   // Method to create a publisher Lambda
@@ -257,5 +350,65 @@ export class NotificationServiceConstruct extends Construct {
     this.topic.grantPublish(publisherLambda);
 
     return publisherLambda;
+  }
+
+  // EventBridge: route activity to SNS and delayed close
+  private createEventBridgeFlows() {
+    // Rule for conversation activity events
+    const activityRule = new events.Rule(this, "ConversationActivityRule", {
+      description: "Routes conversation activity events to SNS and closer",
+      eventPattern: {
+        source: ["app.conversation"],
+        detailType: ["ConversationActivity"],
+      },
+    });
+
+    // Immediate fan-out to SNS topic
+    activityRule.addTarget(new eventTargets.SnsTopic(this.topic));
+
+    // Delayed close using SQS default delivery delay
+    const closeDlq = new sqs.Queue(this, "CloseConversationDLQ", {
+      queueName: "close-conversation-dlq",
+      retentionPeriod: Duration.days(14),
+      encryption: sqs.QueueEncryption.KMS_MANAGED,
+    });
+
+    const closeConversationQueue = new sqs.Queue(
+      this,
+      "CloseConversationQueue",
+      {
+        queueName: "close-conversation-queue",
+        deliveryDelay: Duration.minutes(10), // 5–10 minutes delay; using 10 by default
+        visibilityTimeout: Duration.seconds(60),
+        retentionPeriod: Duration.days(4),
+        encryption: sqs.QueueEncryption.KMS_MANAGED,
+        deadLetterQueue: { queue: closeDlq, maxReceiveCount: 3 },
+      }
+    );
+
+    // Route the same activity event into the delayed queue
+    activityRule.addTarget(new eventTargets.SqsQueue(closeConversationQueue));
+
+    // Processor for closing conversations after delay
+    const closeProcessor = new lambda.NodejsFunction(
+      this,
+      "CloseConversationProcessor",
+      {
+        entry: join(
+          __dirname,
+          "../src/processors/close-conversation-processor.ts"
+        ),
+        handler: "handler",
+        runtime: Runtime.NODEJS_20_X,
+        timeout: Duration.minutes(1),
+        reservedConcurrentExecutions: 5,
+      }
+    );
+    closeConversationQueue.grantConsumeMessages(closeProcessor);
+    closeProcessor.addEventSource(
+      new lambdaEventSources.SqsEventSource(closeConversationQueue, {
+        batchSize: 1,
+      })
+    );
   }
 }

@@ -15,6 +15,7 @@ import * as iam from "aws-cdk-lib/aws-iam";
 import * as lex from "aws-cdk-lib/aws-lex";
 import { GetSessionCommand } from "@aws-sdk/client-lex-runtime-v2";
 import { NotificationServiceConstruct } from "./NotificationServiceConstruct";
+import { ScheduledNotificationConstruct } from "./ScheduledNotificationConstruct";
 
 interface LambdaConfig {
   functionName: string;
@@ -51,6 +52,7 @@ const lambdaConfigs: LambdaConfig[] = [
 
 export class ApiConstruct extends Construct {
   private notificationService: NotificationServiceConstruct;
+  private scheduledNotificationService: ScheduledNotificationConstruct;
 
   constructor(private readonly scope: Stack, id: string) {
     super(scope, id);
@@ -59,6 +61,12 @@ export class ApiConstruct extends Construct {
     this.notificationService = new NotificationServiceConstruct(
       this,
       "NotificationService"
+    );
+
+    // Initialize scheduled notification service
+    this.scheduledNotificationService = new ScheduledNotificationConstruct(
+      this,
+      "ScheduledNotificationService"
     );
   }
   public createRestApi() {
@@ -116,6 +124,16 @@ export class ApiConstruct extends Construct {
       .addResource("notifications")
       .addResource("publish")
       .addMethod("POST", publisherIntegration, { authorizer });
+
+    // Add scheduled notification manual trigger endpoint
+    const schedulerTriggerLambda = this.createSchedulerTriggerLambda();
+    const schedulerTriggerIntegration = new LambdaIntegration(
+      schedulerTriggerLambda
+    );
+    api.root
+      .addResource("scheduled")
+      .addResource("trigger")
+      .addMethod("POST", schedulerTriggerIntegration, { authorizer });
 
     return api;
   }
@@ -294,6 +312,24 @@ export class ApiConstruct extends Construct {
 
     // Grant permission to publish to SNS topic
     this.notificationService.topic.grantPublish(lambda);
+
+    return lambda;
+  }
+
+  private createSchedulerTriggerLambda(): NodejsFunction {
+    const lambda = new NodejsFunction(this, "SchedulerTriggerLambda", {
+      runtime: Runtime.NODEJS_20_X,
+      timeout: cdk.Duration.seconds(30),
+      environment: {
+        SCHEDULED_SNS_TOPIC_ARN:
+          this.scheduledNotificationService.scheduledTopic.topicArn,
+      },
+      entry: join(__dirname, "../src/api/scheduler-trigger.ts"),
+      handler: "handler",
+    });
+
+    // Grant permission to publish to the scheduled SNS topic
+    this.scheduledNotificationService.scheduledTopic.grantPublish(lambda);
 
     return lambda;
   }

@@ -4,12 +4,24 @@ This document explains how to use the notification service that has been integra
 
 ## Architecture Overview
 
-The notification service uses Amazon SNS with multiple SQS queues to handle different types of notifications:
+The notification service accepts conversation activity via Amazon EventBridge and fans out to Amazon SNS. Subscribers consume from dedicated SQS queues. A delayed SQS path closes inactive conversations:
+
+- EventBridge rule matches `source="app.conversation"` and `detail-type="ConversationActivity"`.
+- Immediate target: SNS topic `main-notifications`.
+- Additional target: SQS queue `close-conversation-queue` with a 10‑minute default delay to trigger a closer Lambda.
+
+SNS has multiple SQS subscribers:
 
 - **Email notifications**: Processed by `email-processor`
 - **SMS notifications**: Processed by `sms-processor`
 - **Push notifications**: Processed by `push-processor`
 - **Audit logs**: Processed by `audit-processor`
+- **Checks**: Processed by `checks-processor`
+- **Summaries**: Processed by `summaries-processor`
+
+Delayed close:
+
+- **Close conversation**: EventBridge also targets `close-conversation-queue` (10‑minute delay) processed by `close-conversation-processor`.
 
 ## API Endpoints
 
@@ -72,6 +84,18 @@ Each processor handles messages from their respective SQS queues:
 4. **Audit Processor** (`src/processors/audit-processor.ts`)
    - Logs all notifications for auditing
    - TODO: Store in DynamoDB or CloudWatch
+
+5. **Checks Processor** (`src/processors/checks-processor.ts`)
+   - Handles checks tasks
+   - TODO: Implement actual validation/checks
+
+6. **Summaries Processor** (`src/processors/summaries-processor.ts`)
+   - Handles summarization jobs
+   - TODO: Integrate summarization/LLM logic
+
+7. **Close Conversation Processor** (`src/processors/close-conversation-processor.ts`)
+   - Runs after delay to close inactive conversations
+   - TODO: Persist state change to your datastore
 
 ## Best Practices Implemented
 
